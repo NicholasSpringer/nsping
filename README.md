@@ -1,1 +1,1 @@
-# nisp-ping
+# nmsping
