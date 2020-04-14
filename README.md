@@ -1,1 +1,1 @@
-# nms-ping
+# nsping
