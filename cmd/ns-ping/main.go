@@ -32,7 +32,6 @@ func main() {
 		fmt.Printf("Error creating pinger: %s\n", err.Error())
 		return
 	}
-
 	pinger.OnRecvPkt = func(info *nsping.PktInfo) {
 		estimatedLoss :=
 			100.0 * float32(info.EstimatedLost) / (float32(info.NumReceived) + float32(info.EstimatedLost))
@@ -54,9 +53,11 @@ func main() {
 	go pinger.Run()
 
 	sigChan := make(chan os.Signal, 3)
+	// Intercept signals
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	// Wait for signal
 	<-sigChan
 	pinger.FinishChan <- 1
-	// Wait for channel to close
+	// Wait for channel to close when pinger finishes
 	<-pinger.FinishChan
 }
