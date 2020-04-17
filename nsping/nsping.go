@@ -11,18 +11,19 @@ import (
 
 const (
 	icmpProtoNum   = 1
-	icmpHeaderSize = 28
-	bodySize       = 8
+	icmpHeaderSize = 8
+	payloadSize    = 15
 )
 
 type Pinger struct {
 	Host string
 	Addr net.Addr
-	conn *icmp.PacketConn
+	conn *ipv4.PacketConn
 
-	OnRecvPkt  func(*PktInfo)
-	OnFinish   func(*PingStats)
-	FinishChan chan int
+	OnRecvPkt    func(*PktInfo)
+	OnAssumeLost func(int)
+	OnFinish     func(*PingStats)
+	FinishChan   chan int
 
 	interval time.Duration
 
@@ -42,27 +43,36 @@ type PingStats struct {
 
 type PktInfo struct {
 	SeqNum        int
-	Rtt           time.Duration
+	RTT           time.Duration
 	NumBytes      int
+	TTL           int
 	NumReceived   int
 	EstimatedLost int
 }
 
 type recvPkt struct {
 	bytes    []byte
+	cm       *ipv4.ControlMessage
 	from     net.Addr
 	timeRecv time.Time
 }
 
-func CreatePinger(host string, interval time.Duration) (p *Pinger, err error) {
+func CreatePinger(host string, interval time.Duration, ttl int) (p *Pinger, err error) {
 	finishChan := make(chan int)
 
 	addr, err := net.ResolveIPAddr("ip4:icmp", host)
 	if err != nil {
 		return
 	}
-	conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+	packetConn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
 	if err != nil {
+		return
+	}
+	conn := packetConn.IPv4PacketConn()
+	if err = conn.SetControlMessage(1, true); err != nil {
+		return
+	}
+	if err = conn.SetTTL(ttl); err != nil {
 		return
 	}
 
@@ -79,11 +89,7 @@ func CreatePinger(host string, interval time.Duration) (p *Pinger, err error) {
 	return
 }
 
-func (p *Pinger) Start() {
-	go p.run()
-}
-
-func (p *Pinger) run() {
+func (p *Pinger) Run() {
 	sendTicker := time.NewTicker(p.interval)
 	recvChan := make(chan *recvPkt)
 
@@ -107,6 +113,7 @@ func (p *Pinger) run() {
 				continue
 			}
 			if isInvalid {
+				fmt.Printf("invalid")
 				continue
 			}
 			p.statistics.updateStats(info)
@@ -116,6 +123,9 @@ func (p *Pinger) run() {
 				// Number of packets missing between last received and this packet
 				numSkipped := info.SeqNum - (p.maxSeqRecv + 1)
 				p.estimatedLost += numSkipped
+				for i := p.maxSeqRecv + 1; i < info.SeqNum; i++ {
+					p.OnAssumeLost(i)
+				}
 			} else {
 				// Packet was previously assumed to be lost, decrement num lost
 				p.estimatedLost--
@@ -141,7 +151,7 @@ func (p *Pinger) sendPkt() (err error) {
 	}
 	msgBody := icmp.Echo{
 		ID:   0,
-		Seq:  p.statistics.NumTransmitted + 1,
+		Seq:  p.statistics.NumTransmitted,
 		Data: payload,
 	}
 
@@ -150,15 +160,16 @@ func (p *Pinger) sendPkt() (err error) {
 		Code: 0,
 		Body: &msgBody,
 	}
+
 	msgBytes, err := msg.Marshal(nil)
-	_, err = p.conn.WriteTo(msgBytes, p.Addr)
+	_, err = p.conn.WriteTo(msgBytes, &ipv4.ControlMessage{}, p.Addr)
 	return
 }
 
 func (p *Pinger) recvPkts(recvChan chan<- *recvPkt) {
 	for {
-		buf := make([]byte, 0, icmpHeaderSize+bodySize)
-		_, from, err := p.conn.ReadFrom(buf)
+		buf := make([]byte, icmpHeaderSize+payloadSize)
+		_, cm, from, err := p.conn.ReadFrom(buf)
 		if err != nil {
 			// Finish if ReadFrom timed out
 			if err, ok := err.(net.Error); ok && err.Timeout() {
@@ -169,7 +180,7 @@ func (p *Pinger) recvPkts(recvChan chan<- *recvPkt) {
 			continue
 		}
 
-		recvChan <- &recvPkt{bytes: buf, from: from, timeRecv: time.Now()}
+		recvChan <- &recvPkt{bytes: buf, cm: cm, from: from, timeRecv: time.Now()}
 	}
 }
 
@@ -179,7 +190,7 @@ func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo, isInvalid bool, e
 		return
 	}
 	body, ok := msg.Body.(*icmp.Echo)
-	if !ok || msg.Type != ipv4.ICMPTypeEchoReply || received.from != p.Addr {
+	if !ok || msg.Type != ipv4.ICMPTypeEchoReply || received.from.String() != p.Addr.String() {
 		isInvalid = true
 		return
 	}
@@ -191,10 +202,15 @@ func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo, isInvalid bool, e
 	}
 
 	rtt := received.timeRecv.Sub(timeSent)
+	ttl := 0
+	if received.cm != nil {
+		ttl = received.cm.TTL
+	}
 
 	info = &PktInfo{
 		SeqNum:   body.Seq,
-		Rtt:      rtt,
+		RTT:      rtt,
+		TTL:      ttl,
 		NumBytes: len(received.bytes),
 	}
 	return
@@ -202,14 +218,14 @@ func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo, isInvalid bool, e
 
 func (s *PingStats) updateStats(info *PktInfo) {
 	s.NumReceived++
-	if s.Min == time.Duration(0) || info.Rtt < s.Min {
-		s.Min = info.Rtt
+	if s.Min == time.Duration(0) || info.RTT < s.Min {
+		s.Min = info.RTT
 	}
-	if s.Max == time.Duration(0) || info.Rtt > s.Max {
-		s.Max = info.Rtt
+	if s.Max == time.Duration(0) || info.RTT > s.Max {
+		s.Max = info.RTT
 	}
 	avgFloat := (float64(s.NumReceived-1)/float64(s.NumReceived))*
 		float64(s.Avg) +
-		(1/float64(s.NumReceived))*float64(info.Rtt)
+		(1/float64(s.NumReceived))*float64(info.RTT)
 	s.Avg = time.Duration(avgFloat)
 }
