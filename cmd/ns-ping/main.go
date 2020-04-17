@@ -14,18 +14,20 @@ import (
 const usage = `usage: sudo ns-ping [-i interval (ms)] [-m ttl] host`
 
 func main() {
-	var interval = flag.Int("i", 1000, "")
-	var ttl = flag.Int("m", 64, "")
+	var interval = flag.Int("i", 1000, "interval in ms (minimum 100)")
+	var ttl = flag.Int("m", 64, "Time to live for outgoing packets")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Println(usage)
 		return
 	}
-	if *interval < 500 {
+	if *interval < 100 {
 		fmt.Println("Error: minimum interval is 500 ms")
 	}
-	i := time.Duration(*interval) * time.Second
-	pinger, err := nsping.CreatePinger(flag.Arg(0), i, *ttl)
+
+	host := flag.Arg(0)
+	i := time.Duration(*interval) * time.Millisecond
+	pinger, err := nsping.CreatePinger(host, i, *ttl)
 	if err != nil {
 		fmt.Printf("Error creating pinger: %s\n", err.Error())
 		return

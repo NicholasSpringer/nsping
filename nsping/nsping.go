@@ -113,7 +113,6 @@ func (p *Pinger) Run() {
 				continue
 			}
 			if isInvalid {
-				fmt.Printf("invalid")
 				continue
 			}
 			p.statistics.updateStats(info)
