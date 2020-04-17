@@ -15,6 +15,8 @@ const (
 	payloadSize    = 15
 )
 
+// A Pinger is a struct that can send/receive/record
+//  information about ICMP messages
 type Pinger struct {
 	Host string
 	Addr net.Addr
@@ -33,6 +35,7 @@ type Pinger struct {
 	statistics PingStats
 }
 
+// PingStats holds statistics about the packets sent and received by the Pinger
 type PingStats struct {
 	NumTransmitted int
 	NumReceived    int
@@ -41,6 +44,7 @@ type PingStats struct {
 	Avg            time.Duration
 }
 
+// PktInfo includes information about a singular packet that has been received
 type PktInfo struct {
 	SeqNum        int
 	RTT           time.Duration
@@ -50,6 +54,7 @@ type PktInfo struct {
 	EstimatedLost int
 }
 
+// recvPkt holds a raw packet that has been received as well as metadata
 type recvPkt struct {
 	bytes    []byte
 	cm       *ipv4.ControlMessage
@@ -57,7 +62,10 @@ type recvPkt struct {
 	timeRecv time.Time
 }
 
-func CreatePinger(host string, interval time.Duration, ttl int) (p *Pinger, err error) {
+// CreatePinger returns a pointer to a new Pinger with the given host,
+//  sending interval, and time-to-live setting
+func CreatePinger(host string, interval time.Duration, ttl int) (p *Pinger,
+	err error) {
 	finishChan := make(chan int)
 
 	addr, err := net.ResolveIPAddr("ip4:icmp", host)
@@ -89,6 +97,9 @@ func CreatePinger(host string, interval time.Duration, ttl int) (p *Pinger, err 
 	return
 }
 
+// Run runs the Pinger, causing it to start periodically sending messages
+//  and processing incoming messages. When it is called, it blocks until
+//  an integer is sent to Pinger.FinishChan.
 func (p *Pinger) Run() {
 	sendTicker := time.NewTicker(p.interval)
 	recvChan := make(chan *recvPkt)
@@ -143,6 +154,7 @@ func (p *Pinger) Run() {
 	}
 }
 
+// sendPkt sends a single packet
 func (p *Pinger) sendPkt() (err error) {
 	payload, err := time.Now().MarshalBinary()
 	if err != nil {
@@ -165,6 +177,8 @@ func (p *Pinger) sendPkt() (err error) {
 	return
 }
 
+// recvPkts receives packets and puts them into the recvChan channel. It exits
+//  once a read deadline is set on Pinger.conn
 func (p *Pinger) recvPkts(recvChan chan<- *recvPkt) {
 	for {
 		buf := make([]byte, icmpHeaderSize+payloadSize)
@@ -179,17 +193,26 @@ func (p *Pinger) recvPkts(recvChan chan<- *recvPkt) {
 			continue
 		}
 
-		recvChan <- &recvPkt{bytes: buf, cm: cm, from: from, timeRecv: time.Now()}
+		recvChan <- &recvPkt{
+			bytes:    buf,
+			cm:       cm,
+			from:     from,
+			timeRecv: time.Now()}
 	}
 }
 
-func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo, isInvalid bool, err error) {
+// processPkt returns a PktInfo including info about the given packet,
+//  or returns true for isInvalid if the incoming packet is not an echo
+//  response from the host.
+func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo,
+	isInvalid bool, err error) {
 	msg, err := icmp.ParseMessage(icmpProtoNum, received.bytes)
 	if err != nil {
 		return
 	}
 	body, ok := msg.Body.(*icmp.Echo)
-	if !ok || msg.Type != ipv4.ICMPTypeEchoReply || received.from.String() != p.Addr.String() {
+	if !ok || msg.Type != ipv4.ICMPTypeEchoReply ||
+		received.from.String() != p.Addr.String() {
 		isInvalid = true
 		return
 	}
@@ -215,6 +238,8 @@ func (p *Pinger) processPkt(received *recvPkt) (info *PktInfo, isInvalid bool, e
 	return
 }
 
+// updateStats updates the PingStats struct with the information from the given
+//  packet
 func (s *PingStats) updateStats(info *PktInfo) {
 	s.NumReceived++
 	if s.Min == time.Duration(0) || info.RTT < s.Min {
