@@ -11,7 +11,7 @@ import (
 	"github.com/NicholasSpringer/nsping/nsping"
 )
 
-const usage = `usage: sudo ns-ping [-i interval (ms)] [-m ttl] host`
+const usage = `usage: sudo nsping [-i interval (ms)] [-m ttl] host`
 
 func main() {
 	var interval = flag.Int("i", 1000, "interval in ms (minimum 100)")
